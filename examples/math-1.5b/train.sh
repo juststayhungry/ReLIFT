@@ -9,10 +9,10 @@ ray start --head --num-cpus=100 --num-gpus=4
 # ray stop 
 # ray start --head --num-cpus=100
 
-export MODEL_PATH=/data/tlx/model/Qwen/Qwen2.5-Math-1.5B
+export MODEL_PATH=/data/tlx/model/Qwen/Qwen2.5-0.5B
 export DATA_DIR=./dataset/
 
-export EXP_NAME=math_1.5b_relift_test4
+export EXP_NAME=math_1.5b_relift_test_dual_actor_0.5b
 export WANDB_PROJECT="ReLIFT"
 
 # Train over a single node, 8 A100-80GB GPUs.
@@ -20,7 +20,7 @@ export WANDB_PROJECT="ReLIFT"
 # CUDA_VISIBLE_DEVICES=4,5,6,7 
 python -u -m verl.relift.main_ppo \
     actor_rollout_ref.actor.sft.sft_epochs=1 \
-    actor_rollout_ref.actor.sft.sft_data_size=16 \
+    actor_rollout_ref.actor.sft.sft_data_size=8 \
     actor_rollout_ref.actor.sft.sft_mini_batch_size=2 \
     actor_rollout_ref.actor.sft.sft_micro_batch_size=2 \
     actor_rollout_ref.actor.sft.entropy_coeff=0.001 \
@@ -30,14 +30,14 @@ python -u -m verl.relift.main_ppo \
     data.val_files=$DATA_DIR/valid.parquet \
     data.train_batch_size=4 \
     data.val_batch_size=8 \
-    data.max_prompt_length=512 \
-    data.max_response_length=4096 \
+    data.max_prompt_length=1024 \
+    data.max_response_length=8192 \
     data.max_target_len=8192 \
     actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.actor.grad_clip=0.7 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
-    actor_rollout_ref.actor.ppo_micro_batch_size=16 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=4 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768 \

@@ -196,6 +196,85 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
 
         self._create_dataloader()
 
+    # def _validate(self):
+    #     reward_tensor_lst1, data_source_lst1 = [], []
+    #     reward_tensor_lst2, data_source_lst2 = [], []
+
+    #     for test_data in self.val_dataloader:
+    #         test_batch = DataProto.from_single_dict(test_data)
+
+    #         if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
+    #             return {}
+
+    #         n_val_samples = self.config.actor_rollout_ref.rollout.n_val
+    #         test_batch = test_batch.repeat(repeat_times=n_val_samples, interleave=True)
+    #         test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
+    #         test_gen_batch.meta_info = {
+    #             'eos_token_id': self.tokenizer.eos_token_id,
+    #             'pad_token_id': self.tokenizer.pad_token_id,
+    #             'recompute_log_prob': False,
+    #             'do_sample': False,
+    #             'validate': True,
+    #         }
+
+    #         # pad to be divisible by dp size
+    #         test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
+    #         test_gen_batch_padded.meta_info['val_temperature'] = self.config.actor_rollout_ref.rollout.val_temperature
+
+    #         # === Actor 1 ===
+    #         test_output_gen_batch_padded1 = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+    #         test_output_gen_batch1 = unpad_dataproto(test_output_gen_batch_padded1, pad_size=pad_size)
+    #         test_batch1 = test_batch.union(test_output_gen_batch1)
+
+    #         reward_tensor1 = self.val_reward_fn(test_batch1)
+    #         reward_tensor_lst1.append(reward_tensor1)
+    #         data_source_lst1.append(test_batch1.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor1.shape[0]))
+
+    #         # === Actor 2 ===
+    #         if self.dual_actor:
+    #             test_output_gen_batch_padded2 = self.actor_rollout_wg2.generate_sequences(test_gen_batch_padded)
+    #             test_output_gen_batch2 = unpad_dataproto(test_output_gen_batch_padded2, pad_size=pad_size)
+    #             # test_batch2 = test_batch.union(test_output_gen_batch2)
+    #             test_batch2 = DataProto(
+    #                 batch={**test_batch.batch, **test_output_gen_batch2.batch},
+    #                 non_tensor_batch={**test_batch.non_tensor_batch, **test_output_gen_batch2.non_tensor_batch},
+    #                 meta_info={**test_batch.meta_info, **test_output_gen_batch2.meta_info},
+    #             )
+    #             reward_tensor2 = self.val_reward_fn(test_batch2)
+    #             reward_tensor_lst2.append(reward_tensor2)
+    #             data_source_lst2.append(test_batch2.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor2.shape[0]))
+
+    #         print('Validation: Generation end.')
+
+    #     # ===== Actor 1 metrics =====
+    #     metric_dict1 = {}
+    #     rewards1 = torch.cat(reward_tensor_lst1, dim=0).sum(-1).cpu()
+    #     data_sources1 = np.concatenate(data_source_lst1, axis=0)
+    #     data_source_reward1 = {}
+    #     for i in range(rewards1.shape[0]):
+    #         ds = data_sources1[i]
+    #         data_source_reward1.setdefault(ds, []).append(rewards1[i].item())
+    #     for ds, rewards in data_source_reward1.items():
+    #         metric_dict1[f'actor1/val/test_score/{ds}'] = np.mean(rewards)
+
+    #     # ===== Actor 2 metrics (if dual actor) =====
+    #     metric_dict2 = {}
+    #     if self.dual_actor:
+    #         rewards2 = torch.cat(reward_tensor_lst2, dim=0).sum(-1).cpu()
+    #         data_sources2 = np.concatenate(data_source_lst2, axis=0)
+    #         data_source_reward2 = {}
+    #         for i in range(rewards2.shape[0]):
+    #             ds = data_sources2[i]
+    #             data_source_reward2.setdefault(ds, []).append(rewards2[i].item())
+    #         for ds, rewards in data_source_reward2.items():
+    #             metric_dict2[f'actor2/val/test_score/{ds}'] = np.mean(rewards)
+
+    #     # Return merged metrics
+    #     if self.dual_actor:
+    #         return {**metric_dict1, **metric_dict2}
+    #     else:
+    #         return metric_dict1
+
     def _create_dataloader(self):
         # TODO: we have to make sure the batch size is divisible by the dp size
         from torch.utils.data import DataLoader, SequentialSampler
@@ -387,8 +466,8 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
 
 
                         batch_combined = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n*2, interleave=True)
-                        batch_combined.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch_combined.batch))],
-                                                                dtype=object)
+                        # batch_combined.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch_combined.batch))],
+                        #                                         dtype=object)
                         batch_combined = batch_combined.union(combined_gen)
                         
                     # else:
@@ -421,7 +500,7 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                         if self.dual_actor:
                             batch2.batch['token_level_scores'] = reward_tensor2
                             batch_combined.batch['token_level_scores'] = reward_tensor_combined
-                            uids2 = batch2.non_tensor_batch['uid']
+                            # uids2 = batch2.non_tensor_batch['uid']
                             
                         # else:
                         batch.batch['token_level_scores'] = reward_tensor
@@ -521,8 +600,8 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                                 # 只传 batch，不传 non_tensor_batch 和 meta_info
                                 temp_dp = DataProto(
                                     batch=TensorDict({"old_log_probs": old_log_probs_combined}, batch_size=[old_log_probs_combined.shape[0]]),
-                                    non_tensor_batch={},  # ✅ 避免 union 冲突
-                                    meta_info={},          # ✅ 避免 union 冲突
+                                    # non_tensor_batch={},  # ✅ 避免 union 冲突
+                                    # meta_info={},          # ✅ 避免 union 冲突
                                 )
 
                                 # 执行 union
@@ -553,10 +632,10 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                                                                     kl_ctrl=self.kl_ctrl,
                                                                     kl_penalty=self.config.algorithm.kl_penalty)
                                 metrics_combined.update(kl_metrics_combined)
-                                # batch2, kl_metrics2 = apply_kl_penalty(batch2,
-                                #                                     kl_ctrl=self.kl_ctrl,
-                                #                                     kl_penalty=self.config.algorithm.kl_penalty)
-                                # metrics2.update(kl_metrics2)
+                                batch2, kl_metrics2 = apply_kl_penalty(batch2,
+                                                                    kl_ctrl=self.kl_ctrl,
+                                                                    kl_penalty=self.config.algorithm.kl_penalty)
+                                metrics2.update(kl_metrics2)
                             # else:
                             batch, kl_metrics = apply_kl_penalty(batch,
                                                                 kl_ctrl=self.kl_ctrl,
@@ -598,8 +677,9 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                     # Please take care when you implement group based adv computation such as GRPO and rloo
                     if self.dual_actor:
                         self._balance_batch(batch_combined, metrics=metrics_combined)
-                    else:
-                        self._balance_batch(batch, metrics=metrics)
+                        self._balance_batch(batch2, metrics=metrics2)
+                    # else:
+                    self._balance_batch(batch, metrics=metrics)
 
                     # compute global_valid tokens
                     if self.dual_actor:
@@ -624,16 +704,16 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                                 # batch.batch.batch_size = torch.Size([32]) 
                                 # batch2.batch["advantages"] = batch_combined.batch["advantages"]
                                 # batch.batch["advantages"] = batch_combined.batch["advantages"]
-                                actor_output2 = self.actor_rollout_wg.update_actor(batch_combined)
-                            # else:
-                            actor_output = self.actor_rollout_wg.update_actor(batch_combined)
+                                actor_output2 = self.actor_rollout_wg2.update_actor(batch_combined)
+                                actor_output = self.actor_rollout_wg.update_actor(batch_combined)
+                            else:
+                                actor_output = self.actor_rollout_wg.update_actor(batch)
                             # batch的key含有之前的return['tgt_input_ids', 'position_ids', 'attention_mask', 'responses', 'prompts', 'input_ids', 'token_level_scores', 'old_log_probs', 'token_level_rewards', 'advantages', 'returns']
                         if self.dual_actor:
                             actor_output_metrics2 = reduce_metrics(actor_output2.meta_info['metrics'])
                             metrics2.update(actor_output_metrics2)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
-                    
                     # # SFT update using hard-batch
                     # sft_data_size = self.config.actor_rollout_ref.actor.sft.sft_data_size
                     # if len(sft_buffer_batch) >= sft_data_size:
@@ -676,11 +756,12 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                             path = os.path.join(self.config.trainer.default_local_dir, f'step_{self.global_steps}')
                             self.actor_rollout_wg.save_checkpoint_hf(path)
 
-
                 if self.dual_actor:
                     # collect metrics
                     metrics_combined.update(compute_data_metrics_ours(batch=batch_combined, use_critic=self.use_critic))
                     metrics_combined.update(compute_timing_metrics(batch=batch_combined, timing_raw=timing_raw))
+                    metrics_combined.update({f"actor1/{k}": v for k, v in metrics.items()})
+                    metrics_combined.update({f"actor2/{k}": v for k, v in metrics2.items()})
                     logger.log(data=metrics_combined, step=self.global_steps)
                 else:
                     # collect metrics

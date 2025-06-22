@@ -134,7 +134,7 @@ import hydra
 @hydra.main(config_path='config', config_name='relift_trainer', version_base=None)
 def main(config):
     #tlx
-    dual_actor  = True
+    dual_actor  = True 
     from omegaconf import OmegaConf
     config_dict = OmegaConf.to_container(config, resolve=True)
     config_dict["dual_actor"] = dual_actor
@@ -143,6 +143,7 @@ def main(config):
         print('load model2 config')
         # 深度复制配置
         config_dict["actor_rollout_ref2"] = OmegaConf.to_container(config.actor_rollout_ref, resolve=True)
+        config_dict["actor_rollout_ref2"]['model']['path']='/data/tlx/model/Qwen/Qwen2.5-0.5B'
     config = OmegaConf.create(config_dict)
     #     raise ValueError("config.actor_rollout_ref 不存在！")
     if not ray.is_initialized():

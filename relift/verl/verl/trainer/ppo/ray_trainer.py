@@ -518,7 +518,6 @@ class RayPPOTrainer(object):
                                                      config=self.config.actor_rollout_ref2,
                                                      role='actor_rollout')
             self.resource_pool_to_cls[resource_pool]['actor_rollout2'] = actor_rollout_cls2
-
         # create critic
         if self.config.algorithm.adv_estimator == 'gae':
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
