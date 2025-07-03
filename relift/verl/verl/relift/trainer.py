@@ -407,9 +407,19 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
 
         # perform validation before training
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
-            val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
-            logger.log(data=val_metrics, step=self.global_steps)
+            if self.dual_actor:
+                val_metrics, val_metrics2 = self._validate()
+                # 示例：WandB 的嵌套记录
+                logger.log({
+                    "actor": val_metrics,
+                    "actor2": val_metrics2
+                }, step=self.global_steps)
+            else:
+                val_metrics = self._validate()
+                pprint(f'Initial validation metrics: {val_metrics}')
+                logger.log(val_metrics, step=self.global_steps)
+            # logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
                 return
 
@@ -427,9 +437,10 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
         for _ in range(self.config.trainer.total_epochs):
             
             for batch_dict in self.train_dataloader:
-                batch_dict2 = batch_dict.copy()
-                batch: DataProto = DataProto.from_single_dict(batch_dict)               
-                batch2: DataProto = DataProto.from_single_dict(batch_dict2)   
+                batch: DataProto = DataProto.from_single_dict(batch_dict)   
+                if self.dual_actor:   
+                    batch_dict2 = batch_dict.copy()         
+                    batch2: DataProto = DataProto.from_single_dict(batch_dict2)   
                 
                 #batch_dict['input_ids'].shape torch.Size([4, 512])
                 #batch_dict['sample_id']
@@ -596,7 +607,6 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                                 old_log_probs_combined = torch.cat(
                                     [batch.batch['old_log_probs'], batch2.batch['old_log_probs']], dim=0
                                 )
-                                
                                 # 只传 batch，不传 non_tensor_batch 和 meta_info
                                 temp_dp = DataProto(
                                     batch=TensorDict({"old_log_probs": old_log_probs_combined}, batch_size=[old_log_probs_combined.shape[0]]),
@@ -684,6 +694,7 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                     # compute global_valid tokens
                     if self.dual_actor:
                         batch_combined.meta_info['global_token_num'] = torch.sum(batch_combined.batch['attention_mask'], dim=-1).tolist()
+                        batch2.meta_info['global_token_num'] = torch.sum(batch2.batch['attention_mask'], dim=-1).tolist()
                     else:
                         batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
@@ -699,7 +710,7 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                         # update actor
                         with _timer('update_actor', timing_raw):
                             if self.dual_actor:
-                                # breakpoint()
+                                # breakpoint()#
                                 # batch2.batch.batch_size = torch.Size([32]) 
                                 # batch.batch.batch_size = torch.Size([32]) 
                                 # batch2.batch["advantages"] = batch_combined.batch["advantages"]
@@ -740,11 +751,30 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
                         self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
-                            val_metrics: dict = self._validate()
-                        if 'avg_score' not in val_metrics:
-                            val_metrics['avg_score'] = np.mean([val_metrics[key] for key in val_metrics if key.startswith('val/test_score/')])
-                        metrics.update(val_metrics)
-                        self.maybe_save_best_hf(val_metrics)
+                            if self.dual_actor:
+                                # 双 Actor 情况：处理两个指标字典
+                                val_metrics, val_metrics2 = self._validate()
+                                # 计算第一个 Actor 的平均分
+                                if 'avg_score' not in val_metrics:
+                                    val_metrics['avg_score'] = np.mean([
+                                        val_metrics[key] for key in val_metrics 
+                                        if isinstance(key, str) and key.startswith('val/test_score/')
+                                    ])
+                                
+                                # 计算第二个 Actor 的平均分
+                                if 'avg_score' not in val_metrics2:
+                                    val_metrics2['avg_score'] = np.mean([
+                                        val_metrics2[key] for key in val_metrics2 
+                                        if isinstance(key, str) and key.startswith('val/test_score/')
+                                    ])
+                                metrics.update(val_metrics)
+                                metrics2.update(val_metrics2)
+                            else:
+                                val_metrics: dict = self._validate()
+                                if 'avg_score' not in val_metrics:
+                                    val_metrics['avg_score'] = np.mean([val_metrics[key] for key in val_metrics if key.startswith('val/test_score/')])
+                                metrics.update(val_metrics)
+                            self.maybe_save_best_hf(val_metrics)
 
                     if self.config.trainer.save_freq > 0 and \
                             self.global_steps % self.config.trainer.save_freq == 0:
@@ -757,10 +787,12 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                             self.actor_rollout_wg.save_checkpoint_hf(path)
 
                 if self.dual_actor:
+                    # metrics_combined.update(compute_data_metrics_ours(batch=batch2, use_critic=self.use_critic))
+                    # metrics_combined.update(compute_timing_metrics(batch=batch2, timing_raw=timing_raw))
                     # collect metrics
                     metrics_combined.update(compute_data_metrics_ours(batch=batch_combined, use_critic=self.use_critic))
                     metrics_combined.update(compute_timing_metrics(batch=batch_combined, timing_raw=timing_raw))
-                    metrics_combined.update({f"actor1/{k}": v for k, v in metrics.items()})
+                    metrics_combined.update({f"actor/{k}": v for k, v in metrics.items()})
                     metrics_combined.update({f"actor2/{k}": v for k, v in metrics2.items()})
                     logger.log(data=metrics_combined, step=self.global_steps)
                 else:
@@ -769,16 +801,22 @@ class ReLIFTRayPPOTrainer(RayPPOTrainer):
                     metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                     # TODO: make a canonical logger that supports various backend
                     logger.log(data=metrics, step=self.global_steps)
-
                 self.global_steps += 1
 
                 if self.global_steps >= self.total_training_steps:
-
                     # perform validation after training
                     if self.val_reward_fn is not None:
-                        val_metrics = self._validate()
-                        pprint(f'Final validation metrics: {val_metrics}')
-                        logger.log(data=val_metrics, step=self.global_steps)
+                        if self.dual_actor:
+                            val_metrics, val_metrics2 = self._validate()
+                            # 示例：WandB 的嵌套记录
+                            logger.log({
+                                "actor": val_metrics,
+                                "actor2": val_metrics2
+                            }, step=self.global_steps)
+                        else:
+                            val_metrics = self._validate()
+                            pprint(f'Initial validation metrics: {val_metrics}')
+                            logger.log(val_metrics, step=self.global_steps)
                     return
 
     def maybe_save_best_hf(self, val_metrics: dict):
