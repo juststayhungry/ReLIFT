@@ -442,8 +442,13 @@ class RayPPOTrainer(object):
 
     def _validate(self):
         reward_tensor_lst = []
+        reward_tensor_lst2 = []
         data_source_lst = []
+        data_source_lst2 = []
         for test_data in self.val_dataloader:
+            if self.dual_actor:   
+                test_data2 = test_data.copy()
+                test_batch2 = DataProto.from_single_dict(test_data2)   
             test_batch = DataProto.from_single_dict(test_data)
             # test_batch = test_batch.to('cuda')
 
@@ -461,23 +466,44 @@ class RayPPOTrainer(object):
                 'do_sample': False,
                 'validate': True,
             }
-
             # pad to be divisible by dp_size
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             test_gen_batch_padded.meta_info['val_temperature'] = self.config.actor_rollout_ref.rollout.val_temperature
             test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-            # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+            test_batch = test_batch.union(test_output_gen_batch)
+            
+            if self.dual_actor:
+                n_val_samples = self.config.actor_rollout_ref2.rollout.n_val
+                test_batch2 = test_batch2.repeat(repeat_times=n_val_samples, interleave=True)
+                test_gen_batch2 = test_batch2.pop(['input_ids', 'attention_mask', 'position_ids'])
+                test_gen_batch2.meta_info = {
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'recompute_log_prob': False,
+                    'do_sample': False,
+                    'validate': True,
+                }
+                test_gen_batch_padded2, pad_size = pad_dataproto_to_divisor(test_gen_batch2, self.actor_rollout_wg2.world_size)
+                test_gen_batch_padded2.meta_info['val_temperature'] = self.config.actor_rollout_ref2.rollout.val_temperature
+                test_output_gen_batch_padded2 = self.actor_rollout_wg2.generate_sequences(test_gen_batch_padded2)
+                test_output_gen_batch2 = unpad_dataproto(test_output_gen_batch_padded2, pad_size=pad_size)
+                test_batch2 = test_batch2.union(test_output_gen_batch2)
+            
+            # unpad
             print('Validation: Generation end.')
 
-            test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
             reward_tensor = self.val_reward_fn(test_batch)
-
             reward_tensor_lst.append(reward_tensor)
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
+
+            if self.dual_actor:
+                reward_tensor2 = self.val_reward_fn(test_batch2)
+                reward_tensor_lst2.append(reward_tensor2)
+                data_source_lst2.append(test_batch2.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
         data_sources = np.concatenate(data_source_lst, axis=0)
@@ -493,6 +519,21 @@ class RayPPOTrainer(object):
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
 
+
+        if self.dual_actor:
+            reward_tensor2 = torch.cat(reward_tensor_lst2, dim=0).sum(-1).cpu()  # (batch_size,)
+            data_sources2 = np.concatenate(data_source_lst2, axis=0)
+            # evaluate test_score based on data source
+            data_source_reward2 = {}
+            for i in range(reward_tensor2.shape[0]):
+                data_source2 = data_sources2[i]
+                if data_source2 not in data_source_reward2:
+                    data_source_reward2[data_source2] = []
+                data_source_reward2[data_source2].append(reward_tensor2[i].item())
+            metric_dict2 = {}
+            for data_source2, rewards2 in data_source_reward2.items():
+                metric_dict2[f'val/test_score/{data_source2}'] = np.mean(rewards2)
+            return metric_dict,metric_dict2
         return metric_dict
 
     def init_workers(self):
@@ -729,12 +770,12 @@ class RayPPOTrainer(object):
         self._load_checkpoint()
 
         # perform validation before training
-        if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
-            val_metrics = self._validate()
-            pprint(f'Initial validation metrics: {val_metrics}')
-            logger.log(data=val_metrics, step=self.global_steps)
-            if self.config.trainer.get('val_only', False):
-                return
+        # if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
+        val_metrics = self._validate()
+        pprint(f'Initial validation metrics: {val_metrics}')
+        logger.log(data=val_metrics, step=self.global_steps)
+        if self.config.trainer.get('val_only', False):
+            return
 
         # we start from step 1
         self.global_steps += 1
